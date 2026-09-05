@@ -1,36 +1,50 @@
 name: CI
 on:
+  workflow_dispatch:
+    inputs:
+      leg:
+        description: "baseline (uninstrumented) or instrumented (under chalk/curiosity)"
+        type: choice
+        options: [instrumented, baseline]
+        default: instrumented
+      profile:
+        description: "CrashOverride chalk profile"
+        type: string
+        default: curiosity-tests-racecar
+      racecar_run:
+        description: "racecar correlation token, echoed into the run name"
+        type: string
+        default: ""
   push: {}
   pull_request: {}
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  # The one variable that separates the arms: on baseline, action-checkout
+  # skips its Set up Chalk step entirely.
+  CHALK_ON: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+
+run-name: "CI ${{ inputs.leg || 'push' }} ${{ inputs.racecar_run }}"
+
 jobs:
-  run:
-    runs-on: macos-15
-    name: Xcode ${{ matrix.xcode }}
-    strategy:
-      matrix:
-        xcode: ["16.4", "26.2"]
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
-    steps:
-      - uses: actions/checkout@master
-      - name: Resolve
-        run: swift package resolve
-      - name: Build
-        run: swift build
-      - name: Test
-        run: set -o pipefail && swift test 2>&1 | xcpretty
-      - name: Gen fixtures
-        run: scripts/gen-fixtures.sh
-      - name: Check fixtures
-        run: scripts/diff-fixtures.sh
-      - name: Build fixtures
-        env:
-          GITHUB_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/build-fixtures.sh
   run-linux:
     runs-on: ubuntu-latest
     name: Linux
     steps:
-      - uses: actions/checkout@master
+      - name: Checkout code
+        uses: crashappsec/action-checkout@main
+        with:
+          chalk: ${{ env.CHALK_ON }}
+          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+          observables_continue_on_error: false
+          lfs: false
+      - name: Assert instrumentation is live
+        if: env.CHALK_ON == 'true'
+        run: |
+          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
+
       - name: Build and run tests
         run: swift test --enable-test-discovery
